@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Strava Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #080c10; font-family: 'Inter', sans-serif; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-thumb { background: #ff4d1c44; border-radius: 2px; }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(16px);} to {opacity:1;transform:none;} }
+  @keyframes spin { to { transform: rotate(360deg);} }
+  .fade-up { animation: fadeUp .5s ease forwards; }
+  .day-card { background:#0d1117; border:1px solid #161c24; border-radius:12px; padding:14px; cursor:pointer; transition:all .2s; min-width:140px; flex-shrink:0; }
+  .day-card:hover { border-color:#ff4d1c44; transform:translateY(-2px);}
+  .day-card.sel { background:#120a06; border-color:#ff4d1c; box-shadow:0 0 20px #ff4d1c20; transform:translateY(-4px);}
+  .wk-btn { background:none; border:1px solid #161c24; color:#4a5568; padding:6px 14px; border-radius:6px; cursor:pointer; font-family:'DM Mono',monospace; font-size:11px; transition:all .2s;}
+  .wk-btn.active { background:#ff4d1c; border-color:#ff4d1c; color:#fff;}
+  .tab-btn { background:none; border:none; cursor:pointer; padding:8px 16px; font-size:12px; font-weight:500; letter-spacing:.08em; text-transform:uppercase; border-bottom:2px solid transparent; color:#4a5568;}
+  .tab-btn.active { color:#ff4d1c; border-bottom-color:#ff4d1c;}
+  .chart-card { background:#0d1117; border:1px solid #161c24; border-radius:14px; padding:20px;}
+  .btn-primary { background:linear-gradient(135deg,#fc4c02,#ff7a45); border:none; border-radius:10px; color:#fff; font-family:'Bebas Neue'; font-size:20px; letter-spacing:.1em; padding:14px; cursor:pointer; width:100%;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const { useState, useEffect } = React;
+const { createElement: h } = React;
+const R = Recharts;
+
+const BACKEND = ""; // same origin — served by the backend itself
+
+// ── helpers ──
+const fmtPace = (mps) => { if(!mps) return "—"; const s=1000/mps; return `${Math.floor(s/60)}:${String(Math.round(s%60)).padStart(2,"0")}`; };
+const fmtDur = (s) => { if(!s) return "—"; const hh=Math.floor(s/3600),mm=Math.floor((s%3600)/60); return hh>0?`${hh}h ${mm}m`:`${mm}m`; };
+const fmtDist = (m) => m ? (m/1000).toFixed(1) : "0.0";
+const fmtNum = (n) => n ? n.toLocaleString() : "0";
+const COLORS = { Run:"#ff4d1c", Ride:"#3b82f6", Swim:"#06b6d4", Walk:"#22c55e", Hike:"#84cc16", WeightTraining:"#8b5cf6", Workout:"#f59e0b", def:"#94a3b8" };
+const actColor = (t) => COLORS[t] || COLORS.def;
+const effFg = (e) => !e?"#4a5568": e>=80?"#ff4d1c": e>=60?"#f97316": e>=40?"#eab308":"#22c55e";
+
+async function api(ep){ const r=await fetch(`${BACKEND}${ep}`); if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||`HTTP ${r.status}`);} return r.json(); }
+
+async function getWeek(weeksAgo){
+  const now=new Date(); const mon=new Date(now);
+  mon.setDate(now.getDate()-now.getDay()+(now.getDay()===0?-6:1)-weeksAgo*7); mon.setHours(0,0,0,0);
+  const acts=await api(`/api/activities?weeks_ago=${weeksAgo}`);
+  const days=[];
+  for(let i=0;i<7;i++){
+    const d=new Date(mon); d.setDate(mon.getDate()+i);
+    const da=acts.filter(a=>new Date(a.start_date_local).toDateString()===d.toDateString());
+    const p=da[0]||null;
+    days.push({ date:d.toISOString(), shortDay:d.toLocaleDateString("en-GB",{weekday:"short"}),
+      dateStr:d.toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"}),
+      isRest:!p, activity:p?.type||"Rest", name:p?.name||"Rest Day", distance:p?.distance||0,
+      duration:p?.moving_time||0, avgSpeed:p?.average_speed||0, avgHR:p?.average_heartrate||null,
+      maxHR:p?.max_heartrate||null, calories:p?.calories||0, elev:p?.total_elevation_gain||0,
+      suffer:p?.suffer_score||null, kudos:p?.kudos_count||0 });
+  }
+  const tot=(f)=>days.reduce((s,x)=>s+f(x),0);
+  return { days, totalKm:+(tot(d=>d.distance)/1000).toFixed(1), totalElev:Math.round(tot(d=>d.elev)),
+    totalTime:tot(d=>d.duration), totalCal:tot(d=>d.calories), activeDays:days.filter(d=>!d.isRest).length,
+    longestKm:+(Math.max(...days.map(d=>d.distance/1000),0)).toFixed(1), weekStart:mon };
+}
+
+// ── Connect / loading screen ──
+function Gate({onReady}){
+  const [msg,setMsg]=useState("Connecting to your Strava data…");
+  const [err,setErr]=useState("");
+  const check=async()=>{
+    setErr(""); setMsg("Connecting to your Strava data…");
+    try{
+      const s=await api("/status");
+      if(s.connected){ onReady(s.athlete); }
+      else { setErr("Backend is running but not linked to Strava. Visit /connect once."); }
+    }catch(e){ setErr(`Couldn't load data: ${e.message}`); }
+  };
+  useEffect(()=>{ check(); },[]);
+  return h("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:24}},
+    h("div",{style:{maxWidth:440,width:"100%",textAlign:"center"},className:"fade-up"},
+      h("div",{style:{width:72,height:72,background:"linear-gradient(135deg,#fc4c02,#ff7a45)",borderRadius:20,display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 20px",fontSize:36}},"🏃"),
+      h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:44,color:"#fff",letterSpacing:2}},"STRAVA DASHBOARD"),
+      h("div",{style:{fontSize:13,color:"#4a5568",marginTop:8,marginBottom:28}},"Training Performance Intelligence"),
+      h("div",{style:{background:"#0d1117",border:"1px solid #161c24",borderRadius:16,padding:28}},
+        err
+          ? h("div",null,
+              h("div",{style:{fontSize:13,color:"#ff4d1c",marginBottom:16,padding:"12px 14px",background:"#ff4d1c11",borderRadius:8,lineHeight:1.6}},"⚠ "+err),
+              h("button",{className:"btn-primary",onClick:check},"RETRY"),
+              h("a",{href:"/connect",style:{display:"block",marginTop:12,color:"#4a5568",fontSize:12,fontFamily:"'DM Mono'"}},"or re-authorize Strava →")
+            )
+          : h("div",{style:{padding:"24px 0"}},
+              h("div",{style:{fontSize:36,marginBottom:16,animation:"spin 1s linear infinite",display:"inline-block"}},"◌"),
+              h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:20,color:"#ff4d1c",letterSpacing:1}},msg),
+              h("div",{style:{fontSize:11,color:"#4a5568",marginTop:8}},"First load can take ~30s while the server wakes")
+            )
+      )
+    )
+  );
+}
+
+// ── small UI bits ──
+const Stat=({label,value,unit,accent})=>h("div",{style:{background:"#0d1117",border:"1px solid #161c24",borderRadius:10,padding:"10px 14px",minWidth:96}},
+  h("div",{style:{fontSize:9,color:"#4a5568",textTransform:"uppercase",letterSpacing:1.5,marginBottom:5}},label),
+  h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:24,color:accent||"#e2e8f0",lineHeight:1}},value,h("span",{style:{fontSize:12,color:"#4a5568",marginLeft:2,fontFamily:"'DM Mono'"}},unit))
+);
+
+function DayCard({day,sel,onClick}){
+  const c=actColor(day.activity);
+  return h("div",{className:"day-card"+(sel?" sel":""),onClick},
+    h("div",{style:{fontSize:10,color:"#4a5568",marginBottom:8}},day.shortDay+" · "+new Date(day.date).getDate()),
+    h("div",{style:{display:"inline-flex",alignItems:"center",gap:5,background:c+"18",border:`1px solid ${c}33`,borderRadius:5,padding:"3px 7px",marginBottom:10}},
+      h("div",{style:{width:6,height:6,borderRadius:"50%",background:c}}),
+      h("span",{style:{fontSize:10,fontWeight:600,color:c}},day.isRest?"Rest":day.activity)),
+    day.isRest
+      ? h("div",{style:{fontSize:11,color:"#2d3748",marginTop:4}},"Recovery")
+      : h("div",null,
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:26,color:"#e2e8f0",lineHeight:1}},fmtDist(day.distance),h("span",{style:{fontSize:13,color:"#4a5568",marginLeft:2,fontFamily:"'DM Mono'"}},"km")),
+          h("div",{style:{display:"flex",gap:6,marginTop:8}},
+            day.suffer&&h("div",{style:{background:effFg(day.suffer)+"22",borderRadius:5,padding:"3px 7px",fontFamily:"'DM Mono'",fontSize:11,color:effFg(day.suffer)}},"↑"+day.suffer),
+            day.avgHR&&h("div",{style:{background:"#161c24",borderRadius:5,padding:"3px 7px",fontFamily:"'DM Mono'",fontSize:11,color:"#ef4444"}},"♥"+Math.round(day.avgHR)))
+        )
+  );
+}
+
+// ── main dashboard ──
+function Dashboard({athlete}){
+  const [weeks,setWeeks]=useState([]);
+  const [wi,setWi]=useState(0);
+  const [di,setDi]=useState(null);
+  const [tab,setTab]=useState("training");
+  const [loading,setLoading]=useState(true);
+  const [ai,setAi]=useState(""); const [aiLoad,setAiLoad]=useState(false);
+
+  useEffect(()=>{ (async()=>{
+    setLoading(true);
+    const out=[];
+    for(let i=3;i>=0;i--){
+      try{ const w=await getWeek(i); w.label=i===0?"This Week":i===1?"Last Week":`${i}w ago`; out.push(w);}catch(e){}
+    }
+    setWeeks(out); setLoading(false);
+  })(); },[]);
+
+  if(loading) return h("div",{style:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:"#ff4d1c",fontFamily:"'Bebas Neue'",fontSize:24}},
+    h("span",{style:{animation:"spin 1s linear infinite",marginRight:12}},"◌"),"LOADING YOUR ACTIVITIES…");
+
+  const w=weeks[wi]; if(!w) return h("div",{style:{color:"#fff",padding:40}},"No data found.");
+  const day=di!=null?w.days[di]:null;
+
+  const distData=w.days.map(d=>({name:d.shortDay,km:+fmtDist(d.distance)}));
+  const hrData=w.days.filter(d=>d.avgHR).map(d=>({name:d.shortDay,hr:Math.round(d.avgHR),suffer:d.suffer||0}));
+  const trend=weeks.map(x=>({name:x.label,km:x.totalKm,elev:+(x.totalElev/1000).toFixed(2),time:+(x.totalTime/3600).toFixed(1)}));
+
+  const fetchAI=async()=>{
+    if(!day||day.isRest) return; setAiLoad(true); setAi("");
+    try{
+      const prompt=`You are an endurance coach. 3 sentences max. Workout: ${day.activity} "${day.name}", ${fmtDist(day.distance)}km in ${fmtDur(day.duration)}, pace ${fmtPace(day.avgSpeed)}/km, avg HR ${day.avgHR||"NA"}, suffer ${day.suffer||"NA"}, elev ${day.elev}m. Was the effort appropriate? What does pace/HR say? One action for next session.`;
+      const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
+      const d=await r.json(); setAi(d.content?.[0]?.text||"No insight.");
+    }catch(e){ setAi("Couldn't generate insight."); }
+    setAiLoad(false);
+  };
+
+  const Tooltip2=(p)=> p.active&&p.payload?.length ? h("div",{style:{background:"#0d1117",border:"1px solid #161c24",borderRadius:8,padding:"10px 14px"}},
+      h("div",{style:{fontSize:11,color:"#4a5568",marginBottom:6}},p.label),
+      p.payload.map((x,i)=>h("div",{key:i,style:{fontFamily:"'DM Mono'",fontSize:12,color:x.color||"#e2e8f0"}},`${x.name}: ${typeof x.value==="number"?x.value.toFixed(1):x.value}`))
+    ) : null;
+
+  return h("div",{style:{minHeight:"100vh",color:"#e2e8f0"}},
+    // header
+    h("div",{style:{borderBottom:"1px solid #0d1117",padding:"16px 24px"}},
+      h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}},
+        h("div",{style:{display:"flex",alignItems:"center",gap:14}},
+          h("div",{style:{width:38,height:38,background:"linear-gradient(135deg,#fc4c02,#ff7a45)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}},"🏃"),
+          h("div",null,
+            h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:22,letterSpacing:1}},"STRAVA DASHBOARD"),
+            athlete&&h("div",{style:{fontSize:11,color:"#4a5568"}},`${athlete.firstname||""} ${athlete.lastname||""}`))),
+        h("div",{style:{display:"flex",gap:6}},
+          weeks.map((x,i)=>h("button",{key:i,className:"wk-btn"+(wi===i?" active":""),onClick:()=>{setWi(i);setDi(null);setAi("");}},x.label)))),
+      // stats
+      h("div",{style:{display:"flex",gap:8,marginTop:16,overflowX:"auto",paddingBottom:4}},
+        h(Stat,{label:"Distance",value:w.totalKm,unit:"km",accent:"#ff4d1c"}),
+        h(Stat,{label:"Elevation",value:fmtNum(w.totalElev),unit:"m",accent:"#f97316"}),
+        h(Stat,{label:"Time",value:fmtDur(w.totalTime),unit:""}),
+        h(Stat,{label:"Calories",value:fmtNum(w.totalCal),unit:""}),
+        h(Stat,{label:"Active",value:w.activeDays,unit:"/7",accent:"#22c55e"}),
+        h(Stat,{label:"Longest",value:w.longestKm,unit:"km"})),
+      // tabs
+      h("div",{style:{display:"flex",marginTop:12,borderBottom:"1px solid #0d1117"}},
+        ["training","trends"].map(t=>h("button",{key:t,className:"tab-btn"+(tab===t?" active":""),onClick:()=>setTab(t)},t)))),
+
+    h("div",{style:{padding:"20px 24px",display:"flex",flexDirection:"column",gap:20}},
+      // day scroll
+      h("div",null,
+        h("div",{style:{display:"flex",gap:10,overflowX:"auto",paddingBottom:6}},
+          w.days.map((d,i)=>h(DayCard,{key:i,day:d,sel:di===i,onClick:()=>{setDi(di===i?null:i);setAi("");}})))),
+
+      // day detail
+      day&&h("div",{style:{background:"#0d1117",border:"1px solid #161c24",borderRadius:16,padding:22}},
+        h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:16}},
+          h("div",null,
+            h("div",{style:{fontSize:11,color:"#4a5568",marginBottom:6}},day.dateStr),
+            h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:26,color:"#e2e8f0",lineHeight:1}},day.name)),
+          !day.isRest&&h("button",{onClick:fetchAI,disabled:aiLoad,style:{background:aiLoad?"#161c24":"linear-gradient(135deg,#fc4c02,#ff7a45)",border:"none",borderRadius:8,padding:"9px 18px",color:"#fff",fontFamily:"'Bebas Neue'",fontSize:16,cursor:"pointer"}},aiLoad?"✦ ANALYZING…":"✦ AI COACH")),
+        ai&&h("div",{style:{background:"linear-gradient(135deg,#120a06,#0d1117)",border:"1px solid #ff4d1c22",borderRadius:10,padding:"14px 18px",marginBottom:16,fontSize:13,lineHeight:1.7,color:"#9ca3af"}},
+          h("span",{style:{color:"#ff4d1c",fontFamily:"'Bebas Neue'",fontSize:15}},"✦ COACH  "),ai),
+        !day.isRest&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(110px,1fr))",gap:10}},
+          [["Distance",fmtDist(day.distance),"km","#ff4d1c"],["Duration",fmtDur(day.duration),""],["Pace",fmtPace(day.avgSpeed),"/km"],
+           ["Avg HR",day.avgHR?Math.round(day.avgHR):"—",day.avgHR?"bpm":"","#ef4444"],["Max HR",day.maxHR?Math.round(day.maxHR):"—",""],
+           ["Elev",day.elev,"m","#f97316"],["Calories",day.calories||"—",""],["Suffer",day.suffer||"—","",day.suffer?effFg(day.suffer):null]
+          ].map((m,i)=>h("div",{key:i,style:{background:"#080c10",borderRadius:8,padding:"10px 12px"}},
+            h("div",{style:{fontSize:9,color:"#4a5568",textTransform:"uppercase",letterSpacing:1.5,marginBottom:5}},m[0]),
+            h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:22,color:m[3]||"#e2e8f0",lineHeight:1}},m[1],h("span",{style:{fontSize:10,color:"#4a5568",marginLeft:2,fontFamily:"'DM Mono'"}},m[2])))))),
+
+      // charts
+      tab==="training"&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:16}},
+        h("div",{className:"chart-card"},
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"DISTANCE THIS WEEK"),
+          h(R.ResponsiveContainer,{width:"100%",height:180},
+            h(R.BarChart,{data:distData},
+              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
+              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.Tooltip,{content:Tooltip2}),
+              h(R.Bar,{dataKey:"km",name:"km",radius:[4,4,0,0],fill:"#ff4d1c"})))),
+        hrData.length>0&&h("div",{className:"chart-card"},
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"HEART RATE & SUFFER"),
+          h(R.ResponsiveContainer,{width:"100%",height:180},
+            h(R.BarChart,{data:hrData},
+              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
+              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.Tooltip,{content:Tooltip2}),
+              h(R.Bar,{dataKey:"hr",name:"Avg HR",fill:"#ef444466",radius:[4,4,0,0]}),
+              h(R.Bar,{dataKey:"suffer",name:"Suffer",fill:"#ff4d1c66",radius:[4,4,0,0]}))))),
+
+      tab==="trends"&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:16}},
+        h("div",{className:"chart-card"},
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"WEEKLY KM TREND"),
+          h(R.ResponsiveContainer,{width:"100%",height:180},
+            h(R.AreaChart,{data:trend},
+              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
+              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.Tooltip,{content:Tooltip2}),
+              h(R.Area,{type:"monotone",dataKey:"km",name:"km",stroke:"#ff4d1c",fill:"#ff4d1c33",strokeWidth:3})))),
+        h("div",{className:"chart-card"},
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"ELEVATION & TIME"),
+          h(R.ResponsiveContainer,{width:"100%",height:180},
+            h(R.LineChart,{data:trend},
+              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
+              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
+              h(R.Tooltip,{content:Tooltip2}),
+              h(R.Line,{type:"monotone",dataKey:"elev",name:"Elev(km)",stroke:"#f97316",strokeWidth:2.5}),
+              h(R.Line,{type:"monotone",dataKey:"time",name:"Time(h)",stroke:"#3b82f6",strokeWidth:2.5,strokeDasharray:"5 3"})))))
+    )
+  );
+}
+
+function App(){
+  const [athlete,setAthlete]=useState(null);
+  const [ready,setReady]=useState(false);
+  if(!ready) return h(Gate,{onReady:(a)=>{setAthlete(a);setReady(true);}});
+  return h(Dashboard,{athlete});
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+</script>
+</body>
+</html>

@@ -84,6 +84,16 @@ async def get_valid_access_token() -> str:
 
 
 # ─── OAUTH FLOW ──────────────────────────────────────────────────────────────
+@app.get("/debug")
+def debug():
+    """Shows what config the backend is actually using."""
+    return {
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "secret_set": bool(CLIENT_SECRET) and CLIENT_SECRET != "f4b6255868a3b920b27a11f430ead6817a915f25",
+    }
+
+
 @app.get("/connect")
 def connect():
     """Step 1: Redirect user to Strava's authorization page."""
@@ -197,6 +207,10 @@ async def activity_detail(activity_id: int):
 
 @app.get("/")
 def root():
+    """Serve the dashboard HTML."""
+    if os.path.exists("dashboard.html"):
+        with open("dashboard.html") as f:
+            return HTMLResponse(f.read())
     return HTMLResponse(
         "<div style='font-family:sans-serif;max-width:500px;margin:60px auto'>"
         "<h1>🏃 Strava Dashboard Backend</h1>"
