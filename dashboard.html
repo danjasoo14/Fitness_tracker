@@ -7,8 +7,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #080c10; font-family: 'Inter', sans-serif; }
@@ -30,10 +28,59 @@
 </head>
 <body>
 <div id="root"></div>
+<div id="errbox" style="display:none;position:fixed;top:0;left:0;right:0;background:#ff4d1c;color:#fff;padding:16px;font-family:monospace;font-size:12px;z-index:9999;white-space:pre-wrap;"></div>
+<script>
+// Show any JS error on screen instead of a blank page
+window.onerror = function(msg, src, line, col, err){
+  var b=document.getElementById("errbox");
+  b.style.display="block";
+  b.textContent="ERROR: "+msg+"\nLine "+line+(err&&err.stack?"\n"+err.stack:"");
+  return false;
+};
+window.addEventListener("unhandledrejection",function(e){
+  var b=document.getElementById("errbox");
+  b.style.display="block";
+  b.textContent="PROMISE ERROR: "+(e.reason&&e.reason.message?e.reason.message:e.reason);
+});
+</script>
 <script>
 const { useState, useEffect } = React;
 const { createElement: h } = React;
-const R = Recharts;
+
+// ── lightweight SVG charts (no external lib) ──
+function BarChart({data, color="#ff4d1c", height=180}){
+  if(!data.length) return null;
+  const max=Math.max(...data.map(d=>d.value),1);
+  const W=Math.max(280, data.length*48), pad=28;
+  const slot=(W-pad*2)/data.length, bw=Math.min(36, slot-8);
+  return h("svg",{viewBox:`0 0 ${W} ${height}`,style:{width:"100%",height}},
+    data.map((d,i)=>{
+      const x=pad+i*slot+(slot-bw)/2, bh=(d.value/max)*(height-50);
+      return h("g",{key:i},
+        h("rect",{x,y:height-30-bh,width:bw,height:Math.max(bh,1),rx:4,fill:d.color||color}),
+        h("text",{x:x+bw/2,y:height-12,fill:"#4a5568",fontSize:11,textAnchor:"middle",fontFamily:"DM Mono"},d.name),
+        d.value?h("text",{x:x+bw/2,y:height-36-bh,fill:"#9ca3af",fontSize:10,textAnchor:"middle",fontFamily:"DM Mono"},d.value):null
+      );
+    })
+  );
+}
+function LineChartSVG({series, height=180, labels=[]}){
+  const all=series.flatMap(s=>s.values); if(!all.length) return null;
+  const max=Math.max(...all,1), min=Math.min(...all,0);
+  const W=Math.max(280, labels.length*60), pad=30, range=(max-min)||1;
+  const xFor=(i,n)=>pad+i*((W-pad*2)/Math.max(n-1,1));
+  const yFor=(v)=>height-28-((v-min)/range)*(height-44);
+  return h("svg",{viewBox:`0 0 ${W} ${height}`,style:{width:"100%",height}},
+    series.map((s,si)=>{
+      const pts=s.values.map((v,i)=>`${xFor(i,s.values.length)},${yFor(v)}`).join(" ");
+      return h("g",{key:si},
+        h("polyline",{points:pts,fill:"none",stroke:s.color,strokeWidth:2.5,strokeDasharray:s.dash||"0"}),
+        s.values.map((v,i)=>h("circle",{key:i,cx:xFor(i,s.values.length),cy:yFor(v),r:3.5,fill:s.color}))
+      );
+    }),
+    labels.map((l,i)=>h("text",{key:i,x:xFor(i,labels.length),y:height-8,fill:"#4a5568",fontSize:11,textAnchor:"middle",fontFamily:"DM Mono"},l))
+  );
+}
 
 const BACKEND = ""; // same origin — served by the backend itself
 
@@ -153,10 +200,6 @@ function Dashboard({athlete}){
   const w=weeks[wi]; if(!w) return h("div",{style:{color:"#fff",padding:40}},"No data found.");
   const day=di!=null?w.days[di]:null;
 
-  const distData=w.days.map(d=>({name:d.shortDay,km:+fmtDist(d.distance)}));
-  const hrData=w.days.filter(d=>d.avgHR).map(d=>({name:d.shortDay,hr:Math.round(d.avgHR),suffer:d.suffer||0}));
-  const trend=weeks.map(x=>({name:x.label,km:x.totalKm,elev:+(x.totalElev/1000).toFixed(2),time:+(x.totalTime/3600).toFixed(1)}));
-
   const fetchAI=async()=>{
     if(!day||day.isRest) return; setAiLoad(true); setAi("");
     try{
@@ -167,10 +210,9 @@ function Dashboard({athlete}){
     setAiLoad(false);
   };
 
-  const Tooltip2=(p)=> p.active&&p.payload?.length ? h("div",{style:{background:"#0d1117",border:"1px solid #161c24",borderRadius:8,padding:"10px 14px"}},
-      h("div",{style:{fontSize:11,color:"#4a5568",marginBottom:6}},p.label),
-      p.payload.map((x,i)=>h("div",{key:i,style:{fontFamily:"'DM Mono'",fontSize:12,color:x.color||"#e2e8f0"}},`${x.name}: ${typeof x.value==="number"?x.value.toFixed(1):x.value}`))
-    ) : null;
+  const distData=w.days.map(d=>({name:d.shortDay,value:+fmtDist(d.distance),color:d.isRest?"#161c24":"#ff4d1c"}));
+  const hrData=w.days.filter(d=>d.avgHR).map(d=>({name:d.shortDay,value:Math.round(d.avgHR),color:"#ef4444"}));
+  const trend=weeks.map(x=>({name:x.label,km:x.totalKm,elev:+(x.totalElev/1000).toFixed(2),time:+(x.totalTime/3600).toFixed(1)}));
 
   return h("div",{style:{minHeight:"100vh",color:"#e2e8f0"}},
     // header
@@ -221,45 +263,25 @@ function Dashboard({athlete}){
       // charts
       tab==="training"&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:16}},
         h("div",{className:"chart-card"},
-          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"DISTANCE THIS WEEK"),
-          h(R.ResponsiveContainer,{width:"100%",height:180},
-            h(R.BarChart,{data:distData},
-              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
-              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.Tooltip,{content:Tooltip2}),
-              h(R.Bar,{dataKey:"km",name:"km",radius:[4,4,0,0],fill:"#ff4d1c"})))),
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"DISTANCE THIS WEEK (km)"),
+          h(BarChart,{data:distData})),
         hrData.length>0&&h("div",{className:"chart-card"},
-          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"HEART RATE & SUFFER"),
-          h(R.ResponsiveContainer,{width:"100%",height:180},
-            h(R.BarChart,{data:hrData},
-              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
-              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.Tooltip,{content:Tooltip2}),
-              h(R.Bar,{dataKey:"hr",name:"Avg HR",fill:"#ef444466",radius:[4,4,0,0]}),
-              h(R.Bar,{dataKey:"suffer",name:"Suffer",fill:"#ff4d1c66",radius:[4,4,0,0]}))))),
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"AVG HEART RATE (bpm)"),
+          h(BarChart,{data:hrData,color:"#ef4444"}))),
 
       tab==="trends"&&h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:16}},
         h("div",{className:"chart-card"},
           h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"WEEKLY KM TREND"),
-          h(R.ResponsiveContainer,{width:"100%",height:180},
-            h(R.AreaChart,{data:trend},
-              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
-              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.Tooltip,{content:Tooltip2}),
-              h(R.Area,{type:"monotone",dataKey:"km",name:"km",stroke:"#ff4d1c",fill:"#ff4d1c33",strokeWidth:3})))),
+          h(LineChartSVG,{series:[{color:"#ff4d1c",values:trend.map(t=>t.km)}],labels:trend.map(t=>t.name)})),
         h("div",{className:"chart-card"},
-          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"ELEVATION & TIME"),
-          h(R.ResponsiveContainer,{width:"100%",height:180},
-            h(R.LineChart,{data:trend},
-              h(R.CartesianGrid,{strokeDasharray:"3 3",stroke:"#0d1117",vertical:false}),
-              h(R.XAxis,{dataKey:"name",tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.YAxis,{tick:{fill:"#4a5568",fontSize:11},axisLine:false,tickLine:false}),
-              h(R.Tooltip,{content:Tooltip2}),
-              h(R.Line,{type:"monotone",dataKey:"elev",name:"Elev(km)",stroke:"#f97316",strokeWidth:2.5}),
-              h(R.Line,{type:"monotone",dataKey:"time",name:"Time(h)",stroke:"#3b82f6",strokeWidth:2.5,strokeDasharray:"5 3"})))))
+          h("div",{style:{fontFamily:"'Bebas Neue'",fontSize:16,color:"#9ca3af",marginBottom:14}},"ELEVATION (km) & TIME (h)"),
+          h("div",{style:{display:"flex",gap:16,marginBottom:8,fontSize:11,fontFamily:"DM Mono"}},
+            h("span",{style:{color:"#f97316"}},"● Elevation"),
+            h("span",{style:{color:"#3b82f6"}},"● Time")),
+          h(LineChartSVG,{series:[
+            {color:"#f97316",values:trend.map(t=>t.elev)},
+            {color:"#3b82f6",dash:"5 3",values:trend.map(t=>t.time)}
+          ],labels:trend.map(t=>t.name)})))
     )
   );
 }
